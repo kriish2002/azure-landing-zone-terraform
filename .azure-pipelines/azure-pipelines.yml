@@ -1,0 +1,242 @@
+name: $(Build.DefinitionName)_$(Date:yyyyMMdd)$(Rev:.r)
+
+trigger:
+  branches:
+    include:
+      - main
+      - release/*
+  paths:
+    include:
+      - environments/**
+      - modules/**
+      - .azure-pipelines/**
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - environments/**
+      - modules/**
+
+variables:
+  - name: terraformVersion
+    value: '1.7.5'
+  - name: serviceConnection
+    value: 'sc-azure-landingzone-sp'
+  - name: devResourceGroup
+    value: 'rg-terraform-state-dev'
+  - name: devStorageAccount
+    value: 'sttfstatedevlandingzone'
+  - name: devContainer
+    value: 'tfstate'
+  - name: devKey
+    value: 'landingzone.dev.tfstate'
+  - name: prodResourceGroup
+    value: 'rg-terraform-state-prod'
+  - name: prodStorageAccount
+    value: 'sttfstateprodlandingzone'
+  - name: prodContainer
+    value: 'tfstate'
+  - name: prodKey
+    value: 'landingzone.prod.tfstate'
+
+stages:
+  # -----------------------------------------------------------------------------
+  # STAGE 1: Code Quality, Linting & Security Vulnerability Scan
+  # -----------------------------------------------------------------------------
+  - stage: ValidateAndSecurityScan
+    displayName: 'Code Quality & Security Scan'
+    jobs:
+      - job: LintAndValidate
+        displayName: 'Terraform Fmt, Validate & TFSec Scan'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: HashiCorpTerraform@0
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - script: |
+              echo "Checking Terraform formatting..."
+              terraform fmt -check -recursive
+            displayName: 'Terraform Format Check'
+
+          - script: |
+              echo "Installing tfsec..."
+              curl -s https://raw.githubusercontent.com/aquasecurity/tfsec/master/scripts/install_linux.sh | bash
+              echo "Running static security analysis..."
+              tfsec . --soft-fail
+            displayName: 'Run TFSec Security Scanner'
+
+  # -----------------------------------------------------------------------------
+  # STAGE 2: Development Environment Plan & Apply
+  # -----------------------------------------------------------------------------
+  - stage: Dev_Plan
+    displayName: 'Dev: Plan'
+    dependsOn: ValidateAndSecurityScan
+    jobs:
+      - job: PlanDev
+        displayName: 'Terraform Plan Dev'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: HashiCorpTerraform@0
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - task: TerraformCLI@0
+            displayName: 'Terraform Init (Dev)'
+            inputs:
+              command: 'init'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev'
+              backendType: 'azurerm'
+              backendServiceArm: $(serviceConnection)
+              backendAzureRmResourceGroupName: $(devResourceGroup)
+              backendAzureRmStorageAccountName: $(devStorageAccount)
+              backendAzureRmContainerName: $(devContainer)
+              backendAzureRmKey: $(devKey)
+
+          - task: TerraformCLI@0
+            displayName: 'Terraform Plan (Dev)'
+            inputs:
+              command: 'plan'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev'
+              environmentServiceName: $(serviceConnection)
+              commandOptions: '-out=$(Build.ArtifactStagingDirectory)/tfplan-dev'
+
+          - publish: $(Build.ArtifactStagingDirectory)/tfplan-dev
+            artifact: tfplan-dev
+            displayName: 'Publish Dev Plan Artifact'
+
+  - stage: Dev_Apply
+    displayName: 'Dev: Apply'
+    dependsOn: Dev_Plan
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - deployment: ApplyDev
+        displayName: 'Terraform Apply Dev'
+        pool:
+          vmImage: 'ubuntu-latest'
+        environment: 'LandingZone-Dev'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - download: current
+                  artifact: tfplan-dev
+
+                - task: HashiCorpTerraform@0
+                  displayName: 'Install Terraform'
+                  inputs:
+                    terraformVersion: $(terraformVersion)
+
+                - task: TerraformCLI@0
+                  displayName: 'Terraform Init (Dev)'
+                  inputs:
+                    command: 'init'
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev'
+                    backendType: 'azurerm'
+                    backendServiceArm: $(serviceConnection)
+                    backendAzureRmResourceGroupName: $(devResourceGroup)
+                    backendAzureRmStorageAccountName: $(devStorageAccount)
+                    backendAzureRmContainerName: $(devContainer)
+                    backendAzureRmKey: $(devKey)
+
+                - task: TerraformCLI@0
+                  displayName: 'Terraform Apply (Dev)'
+                  inputs:
+                    command: 'apply'
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/environments/dev'
+                    environmentServiceName: $(serviceConnection)
+                    commandOptions: '$(Pipeline.Workspace)/tfplan-dev/tfplan-dev'
+
+  # -----------------------------------------------------------------------------
+  # STAGE 3: Production Environment Plan & Apply (With Manual Approval Gate)
+  # -----------------------------------------------------------------------------
+  - stage: Prod_Plan
+    displayName: 'Prod: Plan'
+    dependsOn: Dev_Apply
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: PlanProd
+        displayName: 'Terraform Plan Prod'
+        pool:
+          vmImage: 'ubuntu-latest'
+        steps:
+          - task: HashiCorpTerraform@0
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - task: TerraformCLI@0
+            displayName: 'Terraform Init (Prod)'
+            inputs:
+              command: 'init'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/environments/prod'
+              backendType: 'azurerm'
+              backendServiceArm: $(serviceConnection)
+              backendAzureRmResourceGroupName: $(prodResourceGroup)
+              backendAzureRmStorageAccountName: $(prodStorageAccount)
+              backendAzureRmContainerName: $(prodContainer)
+              backendAzureRmKey: $(prodKey)
+
+          - task: TerraformCLI@0
+            displayName: 'Terraform Plan (Prod)'
+            inputs:
+              command: 'plan'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/environments/prod'
+              environmentServiceName: $(serviceConnection)
+              commandOptions: '-out=$(Build.ArtifactStagingDirectory)/tfplan-prod'
+
+          - publish: $(Build.ArtifactStagingDirectory)/tfplan-prod
+            artifact: tfplan-prod
+            displayName: 'Publish Prod Plan Artifact'
+
+  - stage: Prod_Apply
+    displayName: 'Prod: Apply (Manual Gate)'
+    dependsOn: Prod_Plan
+    jobs:
+      - deployment: ApplyProd
+        displayName: 'Terraform Apply Prod'
+        pool:
+          vmImage: 'ubuntu-latest'
+        # The environment 'LandingZone-Production' requires approval in Azure DevOps UI
+        environment: 'LandingZone-Production'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - checkout: self
+                - download: current
+                  artifact: tfplan-prod
+
+                - task: HashiCorpTerraform@0
+                  displayName: 'Install Terraform'
+                  inputs:
+                    terraformVersion: $(terraformVersion)
+
+                - task: TerraformCLI@0
+                  displayName: 'Terraform Init (Prod)'
+                  inputs:
+                    command: 'init'
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/environments/prod'
+                    backendType: 'azurerm'
+                    backendServiceArm: $(serviceConnection)
+                    backendAzureRmResourceGroupName: $(prodResourceGroup)
+                    backendAzureRmStorageAccountName: $(prodStorageAccount)
+                    backendAzureRmContainerName: $(prodContainer)
+                    backendAzureRmKey: $(prodKey)
+
+                - task: TerraformCLI@0
+                  displayName: 'Terraform Apply (Prod)'
+                  inputs:
+                    command: 'apply'
+                    workingDirectory: '$(System.DefaultWorkingDirectory)/environments/prod'
+                    environmentServiceName: $(serviceConnection)
+                    commandOptions: '$(Pipeline.Workspace)/tfplan-prod/tfplan-prod'
+
