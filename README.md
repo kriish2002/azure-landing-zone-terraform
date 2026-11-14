@@ -3,6 +3,7 @@
 [![Terraform](https://img.shields.io/badge/Terraform-%3E%3D1.5.0-623CE4?logo=terraform)](https://www.terraform.io/)
 [![Azure](https://img.shields.io/badge/Azure-Cloud-0078D4?logo=microsoft-azure)](https://azure.microsoft.com/)
 [![Azure DevOps](https://img.shields.io/badge/Azure%20DevOps-CI%2FCD-0078D7?logo=azure-devops)](https://azure.microsoft.com/services/devops/)
+[![GitHub Repo](https://img.shields.io/badge/GitHub-Repository-181717?logo=github)](https://github.com/kriish2002/azure-landing-zone-terraform)
 [![Architecture](https://img.shields.io/badge/Architecture-Hub%20%26%20Spoke-brightgreen)]()
 
 An enterprise-ready, production-grade **Azure Landing Zone (ALZ)** based on Microsoft Cloud Adoption Framework (CAF) principles. Implemented using clean, reusable Terraform modules and orchestrated with an automated Azure DevOps YAML multi-stage pipeline.
